@@ -1,0 +1,192 @@
+import numpy as np
+import random
+from keras.layers import Dense
+from keras.models import Sequential
+from keras.optimizers import Adam
+from collections import deque
+from tensorflow.python.keras.losses import huber_loss
+from keras.models import load_model
+import numpy as np
+file = open('tst.txt','w')
+class Memory():
+  def __init__(self,memory_size):
+    self.buffer = deque(maxlen=memory_size)
+  def add(self,experience):
+    self.buffer.append(experience)
+  def sample(self,num_train):
+    idx = np.random.choice(np.arange(len(self.buffer)), size = num_train, replace=False)
+    return [self.buffer[i] for i in idx]
+  def __len__(self):
+    return len(self.buffer)
+class Qnetwork:
+  def __init__(self, state_size, action_size):
+    self.model = Sequential()
+    self.model.add(Dense(25, activation='relu', input_dim=state_size))
+    self.model.add(Dense(25, activation='relu'))
+    self.model.add(Dense(25, activation='relu'))
+    self.model.add(Dense(action_size, activation='linear'))
+    self.model.compile(loss=huber_loss, optimizer=Adam(learning_rate=0.001))
+
+class character():
+  
+  def __init__(self, hp, atk, tag,spd):
+    self.spd = spd
+    self.hp = hp
+    self.atk = atk
+    self.tag = tag#角色作用
+    self.skill_round = 0#技能持續時間
+    self.defense_percent = 1#受傷害比例
+    self.wait_act_time = int(1000 / spd)
+    if tag == 'healer':
+      self.be_attacked = 150#嘲諷值
+    elif tag== 'attcker':
+      self.be_attacked = 75
+    elif tag == 'helper':
+      self.be_attacked = 100
+      self.up_damage = 2#增加傷害
+  def act(self, skill):#0代表普攻1代表戰技
+    if skill == 0:#初始化嘲諷值
+      if self.tag == 'healer':
+        self.be_attacked = 150#嘲諷值
+      elif self.tag== 'attcker':
+        self.be_attacked = 75
+      elif self.tag == 'helper':
+        self.be_attacked = 100
+      self.skill_round = 0#初始化技能回合數
+      self.defense_percent = 1#初始化受傷害比例
+      return self.atk
+    else:
+      if self.tag == 'healer':
+        self.hp += 820
+        return  -1
+      elif self.tag == 'attcker':
+        return self.atk * 3
+      elif self.tag == 'helper':
+        self.skill_round = 1
+        return  -2
+main_qn = Qnetwork(5,2)
+target_qn = Qnetwork(5,2)
+memory = Memory(10000)
+toatal_step = 0
+success = 0
+for esp in range(80):
+  #file.write('訓練倫次: {}\n'.format(esp+1))
+  print('訓練倫次:{}'.format(esp))
+  step = 0
+  
+  target_qn.model.set_weights(main_qn.model.get_weights())#隔一段時間更新
+  enermy = character(400000,405,'attcker',150)#敵方
+  lt = [character(900,1000,'healer',125), character(500,2000,'attcker',160), character(700,1100,'helper',161)]#我方
+  skill_point = 2#技能點
+  eplison = 0.4
+  num_freiend = 0
+  done = 0
+  state = np.array([enermy.hp, lt[0].hp, skill_point,  num_freiend, lt[2].skill_round])
+  state = np.reshape(state, (1, 5))
+  user_look = 0
+  for play_round in range(30):#
+    user_look = play_round
+    if eplison > 0.1 :
+      eplison *= 0.9
+    for act_num in range(1):#
+      
+      if enermy.wait_act_time < 1:#怪行動
+        if random.random() > 0.6:#怪打skill
+            lt[0].hp -= enermy.atk * 1.4
+            if lt[0].hp < 0:#死亡狀態
+              lt[0].hp = 0
+              lt[0].atk = 0
+        else:
+          lt[0].hp -= enermy.atk 
+          if lt[0].hp < 0:#死亡狀態
+            lt[0].hp = 0
+            lt[0].atk = 0
+        if lt[0].hp  == 0:
+          done == -1
+        state = np.array([enermy.hp, lt[0].hp,  skill_point, -1
+                    , lt[2].skill_round])
+        state = np.reshape(state, (1, 5))
+      for i in range(3):
+        pre_hp = lt[i].hp
+        if True:
+          if skill_point > 0:
+            if random.random() > eplison:#採取best
+              action = np.argmax(main_qn.model.predict(state))
+              if action == 1:
+                skill_point -= 1
+              #print('action of best: {}'.format(action))
+            else:#0代表普攻1代表戰技，隨機產生動作
+              if random.random() > 0.5:
+                action = 1
+                skill_point -= 1
+              else:
+                action = 0
+                if skill_point < 4:
+                  skill_point += 1
+          else:#沒戰技點
+            action = 0
+            if skill_point < 4:
+                skill_point += 1
+          damage = lt[i].act(action)
+          #file.write('第幾位行動: {}, 動作: {}, 傷害: {}, 生存位hp: {}\n'.format(i+1, action, damage, lt[0].hp))
+          if damage > 0:
+            enermy.hp -= damage * (1 + lt[2].skill_round * lt[2].up_damage  )
+            reward = damage * (1 + lt[2].skill_round * lt[2].up_damage  ) * pow(0.9, play_round) / 10
+            #file.write('傷害獎勵: {}\n'.format(reward))
+          elif damage == -1:#healer act
+            reward = max(0, 1 - pre_hp / 900) * pow(0.9, play_round)*100
+           # file.write('治療獎勵: {}\n'.format(reward))
+          """elif damage == -2:
+            file.write('傷害加成時間: {}\n'.format(lt[2].skill_round))
+            file.write('傷害加成: {}\n'.format(lt[2].up_damage))"""
+          next_state = np.array([enermy.hp, lt[0].hp, skill_point,  i+1, lt[2].skill_round])
+          next_state = np.reshape(next_state, (1, 5))
+          
+          #print('回合: {}, 輪次: {}怪物血量: {}\n'.format(play_round+1, act_num+1, enermy.hp))
+          if enermy.hp < 0:#怪死了
+            #print('怪物死亡血量')
+            reward = 10000 * pow(0.9, play_round)
+            #file.write('怪死獎勵: {}\n'.format(reward))
+            done = 1
+            #print('action of mem: {}'.format(action))
+            memory.add((state, action, reward, next_state))
+            break
+          elif done == -1:
+              reward = 0
+              memory.add((state, action, reward, next_state))
+              break
+          #print('action of mem: {}'.format(action))
+          memory.add((state, action, reward, next_state))
+          state = next_state
+
+          if len(memory) >= 30:#經驗池夠多數量
+            inputs = np.zeros((30, 5))
+            targets = np.zeros((30, 2))
+
+            mini_batch = memory.sample(30)
+            for i, (state_b, action_b, reward_b, next_state_b) in enumerate(mini_batch):
+            #print('action_b: {}'.format(action_b))
+              inputs[i] = state_b
+              if next_state_b[0][0] <= 0:#怪死直接套用reward_b
+                target = reward_b
+              else:
+                target = reward_b + 0.1 * np.amax(target_qn.model.predict(next_state_b))
+              targets[i] = main_qn.model.predict(state_b)
+              targets[i][action_b] = target
+            main_qn.model.fit(inputs, targets, epochs=1, verbose=0)
+      if done or done == -1:
+        break
+      file.write("\n\n")
+      #file.write('回合: {}, 輪次: {}怪物血量: {}\n'.format(play_round+1, act_num+1, enermy.hp))
+
+      
+    #print('回合: {}, 敵方血量: {}, 1號血量: {}, 2號血量: {}, 3號血量: {}'.format(play_round, enermy.hp, lt[0].hp, lt[1].hp, lt[2].hp))
+    if done == 1 or done == -1:
+      break
+  print('\n\n')
+  file.write("\n\n")
+  file.write('運行多久回合: {}, 敵方血量: {}, 1號血量: {}, 2號血量: {}, 3號血量: {}\n'.format(user_look+1, enermy.hp, lt[0].hp, lt[1].hp, lt[2].hp))
+  #print('運行多久回合: {}, 敵方血量: {}, 1號血量: {}, 2號血量: {}, 3號血量: {}'.format(user_look+1, enermy.hp, lt[0].hp, lt[1].hp, lt[2].hp))
+#target_qn.model.save('my_Target_model.mat.txt')
+#main_qn.model.save('my_main_model.mat.txt')
+file.close()
